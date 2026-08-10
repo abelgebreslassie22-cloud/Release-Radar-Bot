@@ -10,7 +10,46 @@ import { generateCustomPoster } from '../utils/posterGenerator';
 
 let isScanning = false;
 
+export function isWatchlistMatch(
+  release: { title: string; year: number; type: string },
+  watchlistItems: { title: string; year: number; type: string }[]
+): boolean {
+  if (!watchlistItems || watchlistItems.length === 0) return false;
+
+  return watchlistItems.some((w) => {
+    const isSeries = w.type?.toLowerCase() === 'series' || release.type?.toLowerCase() === 'series';
+
+    // Base titles without quality/tags/seasons
+    const normWBase = normalizeMediaTitle(w.title).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normIBase = normalizeMediaTitle(release.title).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const normWKey = getStandardizedMatchKey(w.title);
+    const normIKey = getStandardizedMatchKey(release.title);
+
+    let titleMatches = false;
+
+    if (normWBase && normIBase) {
+      if (normWBase === normIBase || normIBase.startsWith(normWBase) || normWBase.startsWith(normIBase)) {
+        titleMatches = true;
+      }
+    }
+    if (!titleMatches) {
+      if (normWKey === normIKey || normIKey.includes(normWKey) || normWKey.includes(normIKey)) {
+        titleMatches = true;
+      }
+    }
+
+    if (!titleMatches) return false;
+
+    // Year matching: TV series span multiple years across seasons; ignore strict year check for series
+    const yearMatches = isSeries || Math.abs(w.year - release.year) <= 2;
+
+    return yearMatches;
+  });
+}
+
 export async function runScan() {
+
   if (isScanning) {
     console.log('Scan already in progress. Skipping...');
     return;
@@ -119,11 +158,17 @@ export async function runScan() {
               }
             }
 
-            matchingCount++;
-            await logSuccess(`New release found: ${item.title} (${item.year}) [${item.releaseType}]`, 'Matcher');
-            
-            if (!isFirstRun) {
-              matchedNotifications.push({ item, metadata: { ...metadata, poster: posterUrl } });
+            const isMatchedToWatchlist = isWatchlistMatch(item, items);
+
+            if (isMatchedToWatchlist) {
+              matchingCount++;
+              await logSuccess(`Watchlist match found: ${item.title} (${item.year}) [${item.releaseType}]`, 'Matcher');
+
+              if (!isFirstRun) {
+                matchedNotifications.push({ item, metadata: { ...metadata, poster: posterUrl } });
+              }
+            } else {
+              await logInfo(`Discovered release stored: ${item.title} (${item.year}) [${item.releaseType}]`, 'Scanner');
             }
 
             toInsert.push({

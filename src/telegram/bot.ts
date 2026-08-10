@@ -1,4 +1,8 @@
-import TelegramBotLib from 'node-telegram-bot-api';
+import TelegramBotModule from 'node-telegram-bot-api';
+const TelegramBot = (typeof TelegramBotModule === 'function') 
+  ? TelegramBotModule 
+  : (TelegramBotModule as any).default;
+
 import { getSettings } from '../services/settings';
 import { ReleaseItem } from '../utils/mediaGrouper';
 import { logInfo, logError, logSuccess } from '../services/logger';
@@ -6,8 +10,6 @@ import { getGroupKey } from '../utils/mediaGrouper';
 import { db } from '../database/db';
 import { watchlist, releases } from '../database/schema';
 import { desc } from 'drizzle-orm';
-
-const TelegramBot = (TelegramBotLib as any).default || TelegramBotLib;
 
 let bot: any = null;
 
