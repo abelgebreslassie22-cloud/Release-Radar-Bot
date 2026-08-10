@@ -5,6 +5,8 @@ import { sendTelegramNotification } from '../telegram/bot';
 import { and, eq } from 'drizzle-orm';
 import { logInfo, logError, logWarning, logSuccess, logDebug } from './logger';
 import { Provider } from '../types';
+import { getStandardizedMatchKey, normalizeMediaTitle } from '../utils/mediaGrouper';
+import { generateCustomPoster } from '../utils/posterGenerator';
 
 let isScanning = false;
 
@@ -32,6 +34,9 @@ export async function runScan() {
     } else if (activeSettings.providerType === 'PIRATEBAY') {
       const { PirateBayProvider } = await import('../providers/pirateBayProvider');
       providers.push(new PirateBayProvider());
+    } else if (activeSettings.providerType === 'TORZNAB' && activeSettings.providerUrl) {
+      const { TorznabProvider } = await import('../providers/torznabProvider');
+      providers.push(new TorznabProvider(activeSettings.providerUrl));
     } else if (activeSettings.providerType === 'RSS' && activeSettings.providerUrl) {
       const { RSSProvider } = await import('../providers/rssProvider');
       providers.push(new RSSProvider(activeSettings.providerUrl));
@@ -44,10 +49,8 @@ export async function runScan() {
 
     const items = await db.select().from(watchlist);
     if (items.length === 0) {
-      console.log('Watchlist is empty. Skipping scan.');
-      await logInfo('Watchlist is empty. Skipping scan.', 'Scanner');
-      isScanning = false;
-      return;
+      console.log('Watchlist is empty, but will fetch new releases from providers.');
+      await logInfo('Watchlist is empty, but fetching new releases from providers.', 'Scanner');
     }
 
     for (const provider of providers) {
@@ -63,77 +66,117 @@ export async function runScan() {
         await logSuccess(`Items received:\n${foundItems.length}`, 'Scanner');
         await logSuccess(`Parsed releases:\n${foundItems.length}`, 'Scanner');
 
+        // Pre-fetch existing release identifiers for O(1) in-memory lookup
+        const existingReleases = await db.select({
+          title: releases.title,
+          year: releases.year,
+          provider: releases.provider,
+          releaseType: releases.releaseType,
+          sourceUrl: releases.sourceUrl
+        }).from(releases);
+
+        const isFirstRun = existingReleases.length === 0;
+
+        const existingSet = new Set<string>();
+        for (const r of existingReleases) {
+          if (r.sourceUrl) existingSet.add(r.sourceUrl);
+          existingSet.add(`${r.title}|${r.year}|${r.provider}|${r.releaseType}`);
+        }
+
+        const toInsert: any[] = [];
+        const matchedNotifications: any[] = [];
+
         for (const item of foundItems) {
-          // Flexible title matching
-          const match = items.find((w) => {
-            const cleanW = w.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const cleanI = item.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-            
-            // Check if title matches (or if one contains the other)
-            const titleMatches = cleanW === cleanI || cleanI.includes(cleanW) || cleanW.includes(cleanI);
-            
-            // Allow matching if year matches, or if watchlist year is within 1 year, or if item year is close
-            const yearMatches = Math.abs(w.year - item.year) <= 1;
-            
-            // Check type match
-            const typeMatches = w.type.toLowerCase() === item.type.toLowerCase();
+          const key = `${item.title}|${item.year}|${provider.name}|${item.releaseType}`;
+          const isAlreadyStored = (item.sourceUrl && existingSet.has(item.sourceUrl)) || existingSet.has(key);
 
-            return titleMatches && yearMatches && typeMatches;
-          });
+          if (!isAlreadyStored) {
+            if (item.sourceUrl) existingSet.add(item.sourceUrl);
+            existingSet.add(key); // prevent duplicate processing in same scan batch
 
-          if (match) {
-            matchingCount++;
-            await logSuccess(`Watchlist match found: ${item.title} (${item.year}) [${item.releaseType}]`, 'Matcher');
-            
-            // Check if already stored
-            const existing = await db.select().from(releases).where(
-              and(
-                eq(releases.title, item.title),
-                eq(releases.year, item.year),
-                eq(releases.provider, provider.name),
-                eq(releases.releaseType, item.releaseType)
-              )
-            ).limit(1);
+            const baseTitle = normalizeMediaTitle(item.title);
+            let metadata: any = await fetchMetadata(baseTitle, item.year, item.type);
 
-            if (existing.length === 0) {
-              // Fetch metadata
-              const metadata = await fetchMetadata(item.title, item.year, item.type);
-
-              // Save release
-              try {
-                await db.insert(releases).values({
-                  title: item.title,
-                  year: item.year,
-                  type: item.type,
-                  provider: provider.name,
+            // Check if a poster exists for it; if not, create a new custom poster containing name, file name, and link!
+            let posterUrl = metadata?.poster || null;
+            if (!posterUrl) {
+              posterUrl = generateCustomPoster({
+                title: item.title,
+                year: item.year,
+                type: item.type,
+                releaseType: item.releaseType,
+                sourceUrl: item.sourceUrl,
+                provider: provider.name,
+              });
+              if (!metadata) {
+                metadata = {
+                  poster: posterUrl,
+                  overview: `Discovered from ${provider.name}. File: ${item.title}`,
                   sourceUrl: item.sourceUrl,
-                  releaseType: item.releaseType,
-                  seeders: item.seeders || 0,
-                  leechers: item.leechers || 0,
-                  poster: metadata?.poster,
-                  metadataJson: metadata,
-                });
-
-                // Send notification
-                await sendTelegramNotification({
-                  id: 0,
-                  ...item,
-                  provider: provider.name,
-                  poster: metadata?.poster || null,
-                  metadataJson: metadata,
-                  createdAt: new Date().toISOString()
-                });
-                notificationsCount++;
-              } catch (e: any) {
-                if (e.code === '23505') { // Unique constraint violation
-                  if (activeSettings.debugMode === 1) await logWarning(`Duplicate release ignored: ${item.title}`, 'Scanner');
-                } else {
-                  await logError(`Failed to insert release: ${e.message}`, 'Database');
-                }
+                };
+              } else {
+                metadata.poster = posterUrl;
               }
-            } else {
-               if (activeSettings.debugMode === 1) await logWarning(`Duplicate release ignored: ${item.title} (${item.releaseType})`, 'Scanner');
             }
+
+            matchingCount++;
+            await logSuccess(`New release found: ${item.title} (${item.year}) [${item.releaseType}]`, 'Matcher');
+            
+            if (!isFirstRun) {
+              matchedNotifications.push({ item, metadata: { ...metadata, poster: posterUrl } });
+            }
+
+            toInsert.push({
+              title: item.title,
+              year: item.year,
+              type: item.type,
+              provider: provider.name,
+              sourceUrl: item.sourceUrl,
+              releaseType: item.releaseType,
+              seeders: item.seeders || 0,
+              leechers: item.leechers || 0,
+              poster: posterUrl,
+              metadataJson: metadata || null,
+            });
+          } else {
+            if (activeSettings.debugMode === 1) {
+              await logDebug(`Skipping watched release: ${item.title} (${item.releaseType})`, 'Scanner');
+            }
+          }
+        }
+
+        // Batch insert new releases in chunks of 50
+        const CHUNK_SIZE = 50;
+        for (let i = 0; i < toInsert.length; i += CHUNK_SIZE) {
+          const chunk = toInsert.slice(i, i + CHUNK_SIZE);
+          try {
+            await db.insert(releases).values(chunk);
+          } catch (e: any) {
+            // Fallback to individual inserts if batch fails due to a unique constraint conflict
+            for (const row of chunk) {
+              try {
+                await db.insert(releases).values(row);
+              } catch (innerErr: any) {
+                // ignore duplicate
+              }
+            }
+          }
+        }
+
+        // Send notifications for matches
+        for (const { item, metadata } of matchedNotifications) {
+          try {
+            await sendTelegramNotification({
+              id: 0,
+              ...item,
+              provider: provider.name,
+              poster: metadata?.poster || null,
+              metadataJson: metadata,
+              createdAt: new Date().toISOString()
+            });
+            notificationsCount++;
+          } catch (notifErr: any) {
+            await logError(`Failed to send notification: ${notifErr.message}`, 'Telegram');
           }
         }
         

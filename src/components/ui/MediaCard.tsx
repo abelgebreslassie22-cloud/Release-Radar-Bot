@@ -14,6 +14,8 @@ export const MediaCard: React.FC<MediaCardProps> = ({ group, onClick, onDelete }
   const releaseCount = group.releases.length;
   const topRelease = group.releases[0];
   const topStats = topRelease ? getReleaseSeedsAndLeeches(topRelease) : { seeders: group.topSeeders || 0, leechers: 0 };
+  
+  const displayTitle = group.canonicalTitle;
 
   return (
     <div 
@@ -99,8 +101,8 @@ export const MediaCard: React.FC<MediaCardProps> = ({ group, onClick, onDelete }
       {/* Card Info */}
       <div className="flex-1 flex flex-col justify-between">
         <div>
-          <h4 className="font-bold text-gray-900 text-base line-clamp-1 group-hover:text-indigo-600 transition-colors">
-            {group.canonicalTitle}
+          <h4 className="font-bold text-gray-900 text-base line-clamp-1 group-hover:text-indigo-600 transition-colors" title={displayTitle}>
+            {displayTitle}
           </h4>
 
           <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">

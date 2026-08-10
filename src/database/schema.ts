@@ -41,6 +41,7 @@ export const settings = pgTable('settings', {
   debugMode: integer('debug_mode').default(0).notNull(), // 0 = off, 1 = on (using int for simple boolean in simple pg)
   providerType: text('provider_type').default('NONE').notNull(),
   providerUrl: text('provider_url'),
+  appUrl: text('app_url'),
   lastScan: timestamp('last_scan'),
   activeInstanceId: text('active_instance_id'),
 });

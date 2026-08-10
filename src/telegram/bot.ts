@@ -1,4 +1,4 @@
-import TelegramBot from 'node-telegram-bot-api';
+import TelegramBotLib from 'node-telegram-bot-api';
 import { getSettings } from '../services/settings';
 import { ReleaseItem } from '../utils/mediaGrouper';
 import { logInfo, logError, logSuccess } from '../services/logger';
@@ -7,7 +7,9 @@ import { db } from '../database/db';
 import { watchlist, releases } from '../database/schema';
 import { desc } from 'drizzle-orm';
 
-let bot: TelegramBot | null = null;
+const TelegramBot = (TelegramBotLib as any).default || TelegramBotLib;
+
+let bot: any = null;
 
 function escapeHtml(text: string): string {
   if (!text) return '';
@@ -17,9 +19,23 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
-function getBaseUrl(): string {
-  const url = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000';
-  return url.replace(/\/$/, '');
+async function getBaseUrl(settingsObj?: any): Promise<string> {
+  let appUrl = settingsObj?.appUrl;
+  if (!appUrl) {
+    const s = await getSettings();
+    appUrl = s?.appUrl;
+  }
+  if (appUrl && appUrl.trim()) {
+    return appUrl.trim().replace(/\/$/, '');
+  }
+  if (process.env.RENDER_EXTERNAL_URL && process.env.RENDER_EXTERNAL_URL.trim()) {
+    return process.env.RENDER_EXTERNAL_URL.trim().replace(/\/$/, '');
+  }
+  const envUrl = process.env.APP_URL;
+  if (envUrl && envUrl.trim() && !envUrl.includes('ais-dev-') && !envUrl.includes('ais-pre-') && !envUrl.includes('MY_APP_URL')) {
+    return envUrl.trim().replace(/\/$/, '');
+  }
+  return 'https://release-radar-bot.onrender.com';
 }
 
 export function initTelegramBot() {
@@ -28,7 +44,7 @@ export function initTelegramBot() {
       bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
       
       bot.onText(/\/start/, async (msg) => {
-        const baseUrl = getBaseUrl();
+        const baseUrl = await getBaseUrl();
         const text = `<b>🍿 Release Radar Bot</b>\n\nWelcome! Your Telegram Chat ID is: <code>${msg.chat.id}</code>\n\nPlease copy this Chat ID and paste it into the <b>Settings</b> page of your application to receive instant notifications when new releases match your watchlist!\n\n<b>Commands:</b>\n/watchlist - View your watchlist with detail links\n/releases - View recent releases with detail links\n/ping - Check bot status`;
         
         bot?.sendMessage(msg.chat.id, text, {
@@ -48,7 +64,7 @@ export function initTelegramBot() {
       bot.onText(/\/watchlist/, async (msg) => {
         try {
           const items = await db.select().from(watchlist).orderBy(desc(watchlist.createdAt));
-          const baseUrl = getBaseUrl();
+          const baseUrl = await getBaseUrl();
           if (items.length === 0) {
             bot?.sendMessage(msg.chat.id, '📋 Your Watchlist is currently empty.\n\nAdd movies or series in the web app!', {
               reply_markup: {
@@ -85,7 +101,7 @@ export function initTelegramBot() {
       bot.onText(/\/releases|\/latest/, async (msg) => {
         try {
           const items = await db.select().from(releases).orderBy(desc(releases.createdAt)).limit(5);
-          const baseUrl = getBaseUrl();
+          const baseUrl = await getBaseUrl();
           if (items.length === 0) {
             bot?.sendMessage(msg.chat.id, '🎬 No discovered releases yet.', {
               reply_markup: { inline_keyboard: [[{ text: '🌐 Open App', url: baseUrl }]] }
@@ -132,7 +148,7 @@ export async function sendTelegramNotification(item: ReleaseItem) {
     const settings = await getSettings();
     if (bot && settings?.telegramChatId) {
       const groupKey = getGroupKey(item.title, item.type);
-      const baseUrl = getBaseUrl();
+      const baseUrl = await getBaseUrl(settings);
       const detailUrl = `${baseUrl}/#/media/${groupKey}`;
 
       const seedsText = item.seeders ? `\n<b>Seeds/Peers:</b> ⬆️ ${item.seeders} Seeds / ⬇️ ${item.leechers || 0} Peers` : '';

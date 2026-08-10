@@ -125,13 +125,13 @@ export function setupRoutes(app: Express) {
 
   app.put('/api/settings', async (req: Request, res: Response) => {
     try {
-      const { scanInterval, telegramChatId, metadataApiKey, debugMode, providerType, providerUrl } = req.body;
+      const { scanInterval, telegramChatId, metadataApiKey, debugMode, providerType, providerUrl, appUrl } = req.body;
       
       if (scanInterval !== undefined && (typeof scanInterval !== 'number' || scanInterval < 1)) {
         return res.status(400).json({ error: 'Invalid scan interval' });
       }
 
-      await updateSettings({ scanInterval, telegramChatId, metadataApiKey, debugMode, providerType, providerUrl });
+      await updateSettings({ scanInterval, telegramChatId, metadataApiKey, debugMode, providerType, providerUrl, appUrl });
       
       if (scanInterval) {
         restartScheduler();

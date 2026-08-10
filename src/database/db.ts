@@ -17,6 +17,7 @@ export async function ensureDatabaseSchema() {
     await pool.query(`
       ALTER TABLE releases ADD COLUMN IF NOT EXISTS seeders integer DEFAULT 0;
       ALTER TABLE releases ADD COLUMN IF NOT EXISTS leechers integer DEFAULT 0;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS app_url text;
     `);
     console.log('Database schema verified (seeders & leechers columns ensured).');
   } catch (err) {

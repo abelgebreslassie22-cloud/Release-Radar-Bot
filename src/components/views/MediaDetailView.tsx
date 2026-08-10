@@ -23,6 +23,7 @@ export default function MediaDetailView({ groupKey, onBack }: MediaDetailViewPro
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [sortBy, setSortBy] = useState<'seeders' | 'date' | 'quality'>('seeders');
+  const [searchQuery, setSearchQuery] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<{
     isOpen: boolean;
     type: 'all' | 'single';
@@ -191,8 +192,14 @@ export default function MediaDetailView({ groupKey, onBack }: MediaDetailViewPro
   const imdbSearchUrl = `https://www.imdb.com/find/?q=${encodeURIComponent(group.canonicalTitle)}`;
   const googleSearchUrl = `https://www.google.com/search?q=${encodeURIComponent(group.canonicalTitle + ' ' + group.type + ' watch online')}`;
 
-  // Sort releases by active sort criteria (default: seeders desc)
-  const sortedReleases = [...group.releases].sort((a, b) => {
+  // Filter and sort releases
+  const filteredReleases = group.releases.filter(r => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return r.title.toLowerCase().includes(q) || r.releaseType.toLowerCase().includes(q);
+  });
+
+  const sortedReleases = [...filteredReleases].sort((a, b) => {
     const statsA = getReleaseSeedsAndLeeches(a);
     const statsB = getReleaseSeedsAndLeeches(b);
 
@@ -465,6 +472,20 @@ export default function MediaDetailView({ groupKey, onBack }: MediaDetailViewPro
                 <ArrowDown className="w-3.5 h-3.5 stroke-[3]" />
                 Peers: {group.totalLeechers}
               </span>
+            </div>
+
+            {/* Search Bar */}
+            <div className="flex-1 min-w-[200px]">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search releases..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all shadow-sm"
+                />
+              </div>
             </div>
 
             {/* Sort Selector */}

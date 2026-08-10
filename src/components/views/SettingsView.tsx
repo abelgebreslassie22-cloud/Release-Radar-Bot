@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Clock, Key, MessageCircle, AlertCircle } from 'lucide-react';
+import { Save, Clock, Key, MessageCircle, AlertCircle, Globe } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
 import { Skeleton } from '../ui/Skeleton';
 
 export default function SettingsView() {
-  const [form, setForm] = useState({ scanInterval: 10, telegramChatId: '', metadataApiKey: '', debugMode: 0, providerType: 'NONE', providerUrl: '' });
+  const [form, setForm] = useState({ scanInterval: 10, telegramChatId: '', metadataApiKey: '', debugMode: 0, providerType: 'NONE', providerUrl: '', appUrl: 'https://release-radar-bot.onrender.com' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
@@ -23,7 +23,8 @@ export default function SettingsView() {
             metadataApiKey: data.metadataApiKey || '',
             debugMode: data.debugMode || 0,
             providerType: data.providerType || 'NONE',
-            providerUrl: data.providerUrl || ''
+            providerUrl: data.providerUrl || '',
+            appUrl: data.appUrl || 'https://release-radar-bot.onrender.com'
           });
         }
         setLoading(false);
@@ -111,24 +112,46 @@ export default function SettingsView() {
               <label className="block text-sm font-medium text-gray-900 mb-1">
                 Provider Type
               </label>
-              <select
-                value={form.providerType}
-                onChange={e => setForm({...form, providerType: e.target.value})}
+              <select 
+                value={form.providerType} 
+                onChange={e => setForm({...form, providerType: e.target.value})} 
                 className="w-full max-w-xs px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
               >
                 <option value="NONE">None (Disabled)</option>
-                <option value="PIRATEBAY">The Pirate Bay (Search API)</option>
-                <option value="MOCK">Mock Provider (For testing)</option>
+                <option value="PIRATEBAY">Pirate Bay (No Cloudflare block)</option>
+                <option value="TORZNAB">Torznab (Jackett / Prowlarr)</option>
                 <option value="RSS">RSS Feed</option>
+                <option value="MOCK">Mock Provider (For testing)</option>
               </select>
             </div>
 
             {form.providerType === 'PIRATEBAY' && (
               <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg text-xs text-blue-800">
-                <strong>Pirate Bay Alert Mode Active:</strong> Scans The Pirate Bay for releases matching your watchlist items. <strong>No downloads are performed</strong> — the bot simply sends a Telegram alert with release info so you know it's available and can watch on Netflix, HBO Max, or your favorite platform.
+                <strong>Pirate Bay Active:</strong> Directly queries apibay.org for releases matching your watchlist items. <strong>No downloads are performed</strong>.
               </div>
             )}
             
+            {form.providerType === 'TORZNAB' && (
+              <div className="space-y-4">
+                <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg text-xs text-amber-800">
+                  <strong>Torznab Indexer Active:</strong> Connects to Jackett, Prowlarr, or any Torznab-compatible indexer feed.
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 mb-1">
+                    Torznab API URL
+                  </label>
+                  <input 
+                    type="url" 
+                    placeholder="http://localhost:9117/api/v2.0/indexers/all/results/torznab"
+                    value={form.providerUrl} 
+                    onChange={e => setForm({...form, providerUrl: e.target.value})} 
+                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all" 
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Include the full URL provided by Jackett/Prowlarr, including your <code>apikey=...</code> query param if required.</p>
+                </div>
+              </div>
+            )}
+
             {form.providerType === 'RSS' && (
               <div>
                 <label className="block text-sm font-medium text-gray-900 mb-1">
@@ -228,6 +251,23 @@ export default function SettingsView() {
                   {testingTelegram ? 'Sending Test...' : 'Send Test Notification'}
                 </Button>
               </div>
+            </div>
+
+            <div className="pt-3 border-t border-gray-100">
+              <label className="block text-sm font-medium text-gray-900 mb-1 flex items-center gap-1.5">
+                <Globe className="w-4 h-4 text-indigo-500" />
+                Application Public Base URL
+              </label>
+              <p className="text-xs text-gray-500 mb-2">
+                The public URL sent in Telegram detail links (e.g. your Render deployment URL).
+              </p>
+              <input 
+                type="url" 
+                value={form.appUrl} 
+                onChange={e => setForm({...form, appUrl: e.target.value})} 
+                className="w-full max-w-md px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all" 
+                placeholder="https://release-radar-bot.onrender.com"
+              />
             </div>
           </CardContent>
         </Card>

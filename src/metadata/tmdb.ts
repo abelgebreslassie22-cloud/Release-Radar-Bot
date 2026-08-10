@@ -8,12 +8,8 @@ export async function fetchMetadata(title: string, year: number, type: string): 
     const settings = await getSettings();
     const apiKey = settings?.metadataApiKey;
     if (!apiKey) {
-      console.log('No TMDB metadata API key configured.');
-      await logWarning('TMDB API key not configured', 'Metadata');
       return null;
     }
-
-    await logInfo(`Metadata request started for: ${title} (${year})`, 'Metadata');
 
     const isTV = type === 'Series' || type === 'Anime';
     const searchType = isTV ? 'tv' : 'movie';
@@ -31,20 +27,18 @@ export async function fetchMetadata(title: string, year: number, type: string): 
       }
     }
 
-    const searchRes = await axios.get(searchUrl, { params: searchParams });
+    const searchRes = await axios.get(searchUrl, { params: searchParams, timeout: 5000 });
     let results = searchRes.data?.results || [];
 
     // Fallback: search without year if no results
     if (results.length === 0 && year) {
       delete searchParams.first_air_date_year;
       delete searchParams.year;
-      const retryRes = await axios.get(searchUrl, { params: searchParams });
+      const retryRes = await axios.get(searchUrl, { params: searchParams, timeout: 5000 });
       results = retryRes.data?.results || [];
     }
 
     if (results.length === 0) {
-      console.log(`No TMDB metadata found for ${title}`);
-      await logWarning(`No TMDB metadata found for ${title}`, 'Metadata');
       return null;
     }
 
@@ -55,6 +49,7 @@ export async function fetchMetadata(title: string, year: number, type: string): 
         api_key: apiKey,
         append_to_response: 'credits',
       },
+      timeout: 5000
     });
 
     const d = detailsRes.data;
@@ -65,8 +60,6 @@ export async function fetchMetadata(title: string, year: number, type: string): 
     const language = d.spoken_languages?.map((l: any) => l.english_name || l.name).join(', ');
     const cast = d.credits?.cast?.slice(0, 5).map((c: any) => c.name).join(', ');
     const director = d.credits?.crew?.filter((c: any) => c.job === 'Director').map((c: any) => c.name).join(', ');
-
-    await logSuccess(`Metadata retrieved for: ${title}`, 'Metadata');
 
     return {
       poster,
@@ -81,9 +74,6 @@ export async function fetchMetadata(title: string, year: number, type: string): 
       releaseDate: d.release_date || d.first_air_date,
     };
   } catch (error: any) {
-    const errorMsg = error?.response?.data?.status_message || error.message;
-    console.error('Failed to fetch TMDB metadata:', errorMsg);
-    await logError(`Metadata API request failed: ${errorMsg}`, 'Metadata');
     return null;
   }
 }

@@ -31,6 +31,7 @@
     "react-dom": "^19.0.1",
     "rss-parser": "^3.13.0",
     "tailwind-merge": "^3.6.0",
+    "torrent-search-api": "^2.1.4",
     "vite": "^6.2.3"
   },
   "devDependencies": {
