@@ -2,22 +2,35 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema';
 import dotenv from 'dotenv';
+import dns from 'dns';
+
+// Fix Node 17+ ENETUNREACH issues by preferring IPv4 for database connections
+dns.setDefaultResultOrder('ipv4first');
 
 dotenv.config();
 
 function createPool(connectionString?: string) {
   if (!connectionString) {
-    return new Pool();
+    const p = new Pool();
+    p.on('error', (err) => console.error('Unexpected PG pool error:', err.message));
+    return p;
   }
   const isSslNeeded = connectionString.includes('sslmode=require') || 
                       connectionString.includes('neon.tech') || 
                       connectionString.includes('render.com') || 
                       connectionString.includes('supabase.co');
-  return new Pool({
+  const newPool = new Pool({
     connectionString,
     ssl: isSslNeeded ? { rejectUnauthorized: false } : undefined,
     connectionTimeoutMillis: 10000,
   });
+  
+  // MUST have an error listener, otherwise unhandled pool errors will crash the Node process
+  newPool.on('error', (err) => {
+    console.error('Unexpected PostgreSQL Pool Error:', err.message);
+  });
+  
+  return newPool;
 }
 
 export let pool: Pool = createPool(process.env.DATABASE_URL);
@@ -38,7 +51,11 @@ export async function reconnectDatabase(newUrl: string): Promise<{ success: bool
   const testPool = createPool(cleanUrl);
   
   try {
-    const client = await testPool.connect();
+    // Implement an aggressive timeout promise to prevent hanging connection requests
+    const clientPromise = testPool.connect();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timed out after 8 seconds')), 8000));
+    
+    const client = await Promise.race([clientPromise, timeoutPromise]) as any;
     try {
       await client.query('SELECT 1');
     } finally {

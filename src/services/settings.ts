@@ -33,9 +33,11 @@ export async function initializeSettings(instanceId?: string) {
 
 export async function getSettings() {
   try {
+    if (!process.env.DATABASE_URL) return null;
     const allSettings = await db.select().from(settings);
     return allSettings[0] || null;
-  } catch (e) {
+  } catch (e: any) {
+    console.warn('[Fallback] getSettings failed (Database down?)', e.message);
     return null;
   }
 }

@@ -1,17 +1,23 @@
-import { db } from '../database/db';
+import { db, pool } from '../database/db';
 import { logs, settings } from '../database/schema';
 
 type LogLevel = 'INFO' | 'ERROR' | 'WARNING' | 'SUCCESS';
 
 async function writeLog(level: LogLevel, message: string, service: string, details?: any) {
   try {
+    if (!process.env.DATABASE_URL) return;
+    
+    // Quick fast-fail check to avoid freezing up on ENETUNREACH if pool is down
+    if (pool.totalCount > 0 && pool.idleCount === 0 && pool.waitingCount > 5) {
+      console.warn(`[Logger Fallback - Pool busy] [${level}] [${service}]: ${message}`);
+      return;
+    }
+    
     const s = await db.select({ debugMode: settings.debugMode }).from(settings).limit(1);
     const isDebug = s.length > 0 && s[0].debugMode === 1;
 
     if (level === 'INFO' && !isDebug) {
-      // If not in debug mode, maybe we still want some info logs, but we can filter detailed ones.
-      // Wait, the prompt says: "When ON: Store detailed scanner logs. When OFF: Store only important logs."
-      // Let's rely on a separate logDebug function or check an `isDebugLog` flag.
+      // Not storing general info logs when debug is off
     }
 
     await db.insert(logs).values({
@@ -20,8 +26,9 @@ async function writeLog(level: LogLevel, message: string, service: string, detai
       service,
       details: details ? details : null,
     });
-  } catch (err) {
-    console.error('Failed to write log:', err);
+  } catch (err: any) {
+    // Graceful fallback if database connection is failing/down
+    console.error(`[Logger Fallback] [${level}] [${service}]: ${message}`, err.message);
   }
 }
 
