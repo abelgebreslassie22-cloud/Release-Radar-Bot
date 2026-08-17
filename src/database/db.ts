@@ -5,11 +5,62 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+function createPool(connectionString?: string) {
+  if (!connectionString) {
+    return new Pool();
+  }
+  const isSslNeeded = connectionString.includes('sslmode=require') || 
+                      connectionString.includes('neon.tech') || 
+                      connectionString.includes('render.com') || 
+                      connectionString.includes('supabase.co');
+  return new Pool({
+    connectionString,
+    ssl: isSslNeeded ? { rejectUnauthorized: false } : undefined,
+    connectionTimeoutMillis: 10000,
+  });
+}
+
+export let pool: Pool = createPool(process.env.DATABASE_URL);
+let _db = drizzle(pool, { schema });
+
+// Proxy to allow dynamic database instance replacement without broken references
+export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
+  get(_target, prop) {
+    return (_db as any)[prop];
+  }
 });
 
-export const db = drizzle(pool, { schema });
+export async function reconnectDatabase(newUrl: string): Promise<{ success: boolean; error?: string }> {
+  if (!newUrl || !newUrl.trim()) {
+    return { success: false, error: 'Database URL cannot be empty' };
+  }
+  const cleanUrl = newUrl.trim();
+  const testPool = createPool(cleanUrl);
+  
+  try {
+    const client = await testPool.connect();
+    try {
+      await client.query('SELECT 1');
+    } finally {
+      client.release();
+    }
+  } catch (err: any) {
+    try { await testPool.end(); } catch (e) {}
+    return { success: false, error: `Connection failed: ${err.message}` };
+  }
+
+  // Swap out the active pool and drizzle instance
+  try {
+    await pool.end();
+  } catch (e) {}
+
+  pool = testPool;
+  _db = drizzle(pool, { schema });
+  process.env.DATABASE_URL = cleanUrl;
+
+  await ensureDatabaseSchema();
+  return { success: true };
+}
 
 export async function ensureDatabaseSchema() {
   if (!process.env.DATABASE_URL) return;
@@ -78,4 +129,5 @@ export async function ensureDatabaseSchema() {
     console.error('Error ensuring database schema:', err);
   }
 }
+
 

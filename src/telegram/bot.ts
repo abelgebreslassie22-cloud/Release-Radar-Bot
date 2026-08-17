@@ -41,49 +41,68 @@ async function getBaseUrl(settingsObj?: any): Promise<string> {
   return 'https://release-radar-bot.onrender.com';
 }
 
-export async function initTelegramBot(appUrlString?: string) {
+export async function initTelegramBot(customToken?: string, appUrlString?: string): Promise<{ success: boolean; botInfo?: any; error?: string }> {
   if (process.env.DISABLE_TELEGRAM_BOT === 'true') {
     console.log('DISABLE_TELEGRAM_BOT is set to true. Skipping Telegram bot initialization.');
     logInfo('Telegram bot disabled via DISABLE_TELEGRAM_BOT environment variable.', 'Telegram');
-    return;
+    return { success: false, error: 'Telegram bot disabled via configuration' };
   }
 
-  if (process.env.TELEGRAM_BOT_TOKEN) {
-    try {
-      const appUrl = appUrlString || process.env.APP_URL;
-      // If we have an APP_URL and we are in production, prefer Webhook
-      const preferWebhook = !!appUrl && !appUrl.includes('localhost') && !appUrl.includes('ais-dev-');
-      const enablePolling = process.env.DISABLE_TELEGRAM_POLLING !== 'true' && !preferWebhook;
+  const token = customToken || process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !token.trim()) {
+    return { success: false, error: 'No Telegram bot token provided' };
+  }
 
-      if (preferWebhook) {
-         bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { webHook: true });
-         const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/telegram/webhook`;
-         bot.setWebHook(webhookUrl).then(() => {
-           console.log(`Telegram Webhook set to ${webhookUrl}`);
-           logInfo(`Telegram Webhook set to ${webhookUrl}`, 'Telegram');
-         }).catch((err: any) => {
-           console.error('Failed to set Telegram webhook:', err);
-         });
-      } else {
-         bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: enablePolling });
-      }
+  const cleanToken = token.trim();
 
-      if (enablePolling && !preferWebhook) {
-        bot.on('polling_error', (error: any) => {
-          const errMsg = error?.message || String(error);
-          if (errMsg.includes('409 Conflict')) {
-            console.warn('Telegram 409 Conflict: Another bot instance is currently running. Stopping local polling to prevent conflicts.');
-            logInfo('Telegram polling stopped locally because another instance is active.', 'Telegram');
-            if (bot && typeof bot.stopPolling === 'function') {
-              bot.stopPolling().catch(() => {});
-            }
+  // If a bot is already running, stop polling first
+  await stopTelegramBot();
+
+  try {
+    // Validate token first by fetching bot info
+    const testRes = await fetch(`https://api.telegram.org/bot${cleanToken}/getMe`);
+    const testData: any = await testRes.json();
+    if (!testData.ok) {
+      return { success: false, error: testData.description || 'Invalid Telegram Bot Token' };
+    }
+    const botUser = testData.result;
+
+    process.env.TELEGRAM_BOT_TOKEN = cleanToken;
+
+    const appUrl = appUrlString || process.env.APP_URL;
+    // If we have an APP_URL and we are in production, prefer Webhook
+    const preferWebhook = !!appUrl && !appUrl.includes('localhost') && !appUrl.includes('ais-dev-') && !appUrl.includes('ais-pre-');
+    const enablePolling = process.env.DISABLE_TELEGRAM_POLLING !== 'true' && !preferWebhook;
+
+    if (preferWebhook) {
+       bot = new TelegramBot(cleanToken, { webHook: true });
+       const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/telegram/webhook`;
+       bot.setWebHook(webhookUrl).then(() => {
+         console.log(`Telegram Webhook set to ${webhookUrl}`);
+         logInfo(`Telegram Webhook set to ${webhookUrl} (@${botUser.username})`, 'Telegram');
+       }).catch((err: any) => {
+         console.error('Failed to set Telegram webhook:', err);
+       });
+    } else {
+       bot = new TelegramBot(cleanToken, { polling: enablePolling });
+    }
+
+    if (enablePolling && !preferWebhook) {
+      bot.on('polling_error', (error: any) => {
+        const errMsg = error?.message || String(error);
+        if (errMsg.includes('409 Conflict')) {
+          console.warn('Telegram 409 Conflict: Another bot instance is currently running. Stopping local polling to prevent conflicts.');
+          logInfo('Telegram polling stopped locally because another instance is active.', 'Telegram');
+          if (bot && typeof bot.stopPolling === 'function') {
+            bot.stopPolling().catch(() => {});
           }
-        });
-      }
-      
-      try {
-        bot.deleteMyCommands().catch(() => {});
-      } catch (e) {}
+        }
+      });
+    }
+    
+    try {
+      bot.deleteMyCommands().catch(() => {});
+    } catch (e) {}
 
       const sendDashboard = async (chatId: number, messageId?: number) => {
         try {
@@ -260,17 +279,16 @@ export async function initTelegramBot(appUrlString?: string) {
         bot?.sendMessage(msg.chat.id, '<b>Pong!</b> ⚡ Release Radar Bot is online and active.', { parse_mode: 'HTML' });
       });
 
-      console.log('Telegram bot initialized.');
-      logSuccess('Telegram bot started and listening for commands', 'Telegram');
+      console.log(`Telegram bot initialized (@${botUser.username}).`);
+      logSuccess(`Telegram bot started and listening (@${botUser.username})`, 'Telegram');
+      return { success: true, botInfo: botUser };
     } catch (e: any) {
       console.error('Failed to initialize Telegram Bot:', e);
       logError(`Failed to start Telegram bot: ${e.message}`, 'Telegram');
+      return { success: false, error: e.message };
     }
-  } else {
-    console.log('TELEGRAM_BOT_TOKEN not provided, skipping Telegram bot initialization.');
-    logInfo('TELEGRAM_BOT_TOKEN not provided. Notifications disabled.', 'Telegram');
   }
-}
+
 
 export async function sendTelegramNotification(item: ReleaseItem) {
   try {

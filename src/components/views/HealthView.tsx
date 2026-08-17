@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, XCircle, Activity, Server, Database, Bot, HelpCircle, ExternalLink, Key, Terminal } from 'lucide-react';
+import { CheckCircle2, XCircle, Activity, Server, Database, Bot, HelpCircle, ExternalLink, Key, Terminal, Settings, Zap } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card';
+import { Button } from '../ui/Button';
 import { Skeleton } from '../ui/Skeleton';
 
 export default function HealthView() {
@@ -31,12 +32,45 @@ export default function HealthView() {
     );
   }
 
+  const needsConfig = health?.database !== 'Healthy' || health?.telegram !== 'Healthy';
+
   return (
     <div className="space-y-8 max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900 tracking-tight">System Health</h2>
-        <p className="text-gray-500 text-sm mt-1">Monitor the status of background services and connections.</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">System Health</h2>
+          <p className="text-gray-500 text-sm mt-1">Monitor the status of background services and connections.</p>
+        </div>
+
+        <Button
+          onClick={() => { window.location.hash = '#/settings'; }}
+          className="gap-2 self-start bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-sm text-xs font-semibold"
+        >
+          <Settings className="w-4 h-4" /> Open Environment Settings
+        </Button>
       </div>
+
+      {needsConfig && (
+        <div className="p-5 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border border-indigo-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+          <div className="flex items-start gap-3.5">
+            <div className="p-2 bg-indigo-600 text-white rounded-xl shadow-sm shrink-0 mt-0.5">
+              <Zap className="w-5 h-5 fill-white" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-gray-900 text-sm">Configure Database & Bot Directly in UI</h3>
+              <p className="text-xs text-gray-600 mt-0.5 max-w-xl leading-relaxed">
+                You can input your <code>DATABASE_URL</code>, <code>TELEGRAM_BOT_TOKEN</code>, and <code>TMDB_API_KEY</code> in the Settings page and click <strong>"Save & Connect"</strong> to automatically connect all services.
+              </p>
+            </div>
+          </div>
+          <Button
+            onClick={() => { window.location.hash = '#/settings'; }}
+            className="shrink-0 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 rounded-xl shadow"
+          >
+            Configure & Connect
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <HealthCard 
