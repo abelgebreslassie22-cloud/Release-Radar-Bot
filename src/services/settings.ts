@@ -6,9 +6,10 @@ export async function initializeSettings(instanceId?: string) {
   try {
     const allSettings = await db.select().from(settings);
     if (allSettings.length === 0) {
-      await db.insert(settings).values({ scanInterval: 10, activeInstanceId: instanceId });
+      await db.insert(settings).values({ scanInterval: 10, activeInstanceId: instanceId, providerType: 'PIRATEBAY' });
     } else {
       const active = allSettings[0];
+      const updates: any = {};
       if (instanceId) {
         if (active.activeInstanceId && active.activeInstanceId !== instanceId) {
           console.warn(`WARNING: Another instance might be running (Previous ID: ${active.activeInstanceId}, Current ID: ${instanceId}). Duplicate background services may occur.`);
@@ -16,7 +17,13 @@ export async function initializeSettings(instanceId?: string) {
              logWarning(`Another instance started. Previous ID: ${active.activeInstanceId}, New ID: ${instanceId}. Duplicate background services may occur.`, 'System');
           }).catch(console.error);
         }
-        await db.update(settings).set({ activeInstanceId: instanceId }).where(eq(settings.id, active.id));
+        updates.activeInstanceId = instanceId;
+      }
+      if (!active.providerType || active.providerType === 'NONE') {
+        updates.providerType = 'PIRATEBAY';
+      }
+      if (Object.keys(updates).length > 0) {
+        await db.update(settings).set(updates).where(eq(settings.id, active.id));
       }
     }
   } catch (e) {

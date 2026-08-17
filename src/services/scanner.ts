@@ -70,9 +70,6 @@ export async function runScan() {
     if (activeSettings.providerType === 'MOCK') {
       const { MockRSSProvider } = await import('../providers/mockRssProvider');
       providers.push(new MockRSSProvider());
-    } else if (activeSettings.providerType === 'PIRATEBAY') {
-      const { PirateBayProvider } = await import('../providers/pirateBayProvider');
-      providers.push(new PirateBayProvider());
     } else if (activeSettings.providerType === 'TORZNAB' && activeSettings.providerUrl) {
       const { TorznabProvider } = await import('../providers/torznabProvider');
       providers.push(new TorznabProvider(activeSettings.providerUrl));
@@ -80,10 +77,9 @@ export async function runScan() {
       const { RSSProvider } = await import('../providers/rssProvider');
       providers.push(new RSSProvider(activeSettings.providerUrl));
     } else {
-      console.log('No valid active provider configured.');
-      await logWarning('No valid active provider configured.', 'Scanner');
-      isScanning = false;
-      return;
+      // Default fallback to PirateBayProvider for PIRATEBAY, NONE, or unset
+      const { PirateBayProvider } = await import('../providers/pirateBayProvider');
+      providers.push(new PirateBayProvider());
     }
 
     const items = await db.select().from(watchlist);
@@ -222,6 +218,11 @@ export async function runScan() {
             notificationsCount++;
           } catch (notifErr: any) {
             await logError(`Failed to send notification: ${notifErr.message}`, 'Telegram');
+          }
+          
+          // Wait 1 second before sending the next notification to avoid Telegram rate limits
+          if (matchedNotifications.length > 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
           }
         }
         

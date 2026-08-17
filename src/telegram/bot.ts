@@ -9,7 +9,8 @@ import { logInfo, logError, logSuccess } from '../services/logger';
 import { getGroupKey } from '../utils/mediaGrouper';
 import { db } from '../database/db';
 import { watchlist, releases } from '../database/schema';
-import { desc } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
+import { runScan } from '../services/scanner';
 
 let bot: any = null;
 
@@ -40,97 +41,223 @@ async function getBaseUrl(settingsObj?: any): Promise<string> {
   return 'https://release-radar-bot.onrender.com';
 }
 
-export function initTelegramBot() {
+export async function initTelegramBot(appUrlString?: string) {
+  if (process.env.DISABLE_TELEGRAM_BOT === 'true') {
+    console.log('DISABLE_TELEGRAM_BOT is set to true. Skipping Telegram bot initialization.');
+    logInfo('Telegram bot disabled via DISABLE_TELEGRAM_BOT environment variable.', 'Telegram');
+    return;
+  }
+
   if (process.env.TELEGRAM_BOT_TOKEN) {
     try {
-      bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+      const appUrl = appUrlString || process.env.APP_URL;
+      // If we have an APP_URL and we are in production, prefer Webhook
+      const preferWebhook = !!appUrl && !appUrl.includes('localhost') && !appUrl.includes('ais-dev-');
+      const enablePolling = process.env.DISABLE_TELEGRAM_POLLING !== 'true' && !preferWebhook;
+
+      if (preferWebhook) {
+         bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { webHook: true });
+         const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/telegram/webhook`;
+         bot.setWebHook(webhookUrl).then(() => {
+           console.log(`Telegram Webhook set to ${webhookUrl}`);
+           logInfo(`Telegram Webhook set to ${webhookUrl}`, 'Telegram');
+         }).catch((err: any) => {
+           console.error('Failed to set Telegram webhook:', err);
+         });
+      } else {
+         bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: enablePolling });
+      }
+
+      if (enablePolling && !preferWebhook) {
+        bot.on('polling_error', (error: any) => {
+          const errMsg = error?.message || String(error);
+          if (errMsg.includes('409 Conflict')) {
+            console.warn('Telegram 409 Conflict: Another bot instance is currently running. Stopping local polling to prevent conflicts.');
+            logInfo('Telegram polling stopped locally because another instance is active.', 'Telegram');
+            if (bot && typeof bot.stopPolling === 'function') {
+              bot.stopPolling().catch(() => {});
+            }
+          }
+        });
+      }
       
-      bot.onText(/\/start/, async (msg) => {
-        const baseUrl = await getBaseUrl();
-        const text = `<b>🍿 Release Radar Bot</b>\n\nWelcome! Your Telegram Chat ID is: <code>${msg.chat.id}</code>\n\nPlease copy this Chat ID and paste it into the <b>Settings</b> page of your application to receive instant notifications when new releases match your watchlist!\n\n<b>Commands:</b>\n/watchlist - View your watchlist with detail links\n/releases - View recent releases with detail links\n/ping - Check bot status`;
-        
-        bot?.sendMessage(msg.chat.id, text, {
+      try {
+        bot.deleteMyCommands().catch(() => {});
+      } catch (e) {}
+
+      const sendDashboard = async (chatId: number, messageId?: number) => {
+        try {
+          const baseUrl = await getBaseUrl();
+          const wlCount = await db.select({ id: watchlist.id }).from(watchlist);
+          const text = `<b>🍿 Release Radar Dashboard</b>\n\n<b>System Status:</b> 🟢 Online\n<b>Tracking:</b> ${wlCount.length} Watchlist Items\n\n<i>What would you like to do?</i>`;
+          
+          const inlineKeyboard = [
+            [
+              { text: '📋 My Watchlist', callback_data: 'menu_watchlist_0' },
+              { text: '🎬 Recent Releases', callback_data: 'menu_recent_0' }
+            ],
+            [
+              { text: '🔄 Force Scan', callback_data: 'action_force_scan' }
+            ],
+            [
+              { text: '🌐 Open Full Web App', url: baseUrl }
+            ]
+          ];
+
+          const opts: any = {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: inlineKeyboard
+            }
+          };
+
+          if (messageId) {
+            bot.deleteMessage(chatId, messageId).catch(() => {});
+          }
+          await bot.sendMessage(chatId, text, opts);
+        } catch (err) {
+          console.error("Dashboard error:", err);
+        }
+      };
+
+      bot.onText(/\/start/, (msg: any) => {
+        bot.sendMessage(msg.chat.id, '✅ <b>Welcome!</b> The menu button is now pinned below.', {
           parse_mode: 'HTML',
           reply_markup: {
-            inline_keyboard: [
-              [{ text: '🌐 Open Release Radar App', url: baseUrl }]
-            ]
+            keyboard: [[{ text: '📋 Menu' }]],
+            resize_keyboard: true,
+            is_persistent: true
           }
+        }).then(() => {
+           sendDashboard(msg.chat.id);
         });
       });
 
-      bot.onText(/\/ping/, (msg) => {
-        bot?.sendMessage(msg.chat.id, '<b>Pong!</b> ⚡ Release Radar Bot is online and active.', { parse_mode: 'HTML' });
+      bot.onText(/\/menu/, (msg: any) => {
+        sendDashboard(msg.chat.id);
       });
 
-      bot.onText(/\/watchlist/, async (msg) => {
-        try {
+      bot.on('message', (msg: any) => {
+        if (msg.text === '📋 Menu') {
+          sendDashboard(msg.chat.id);
+        }
+      });
+
+      bot.on('callback_query', async (query: any) => {
+        const chatId = query.message.chat.id;
+        const messageId = query.message.message_id;
+        const data = query.data;
+
+        if (data === 'action_main_menu') {
+          await sendDashboard(chatId, messageId);
+        } 
+        else if (data === 'action_force_scan') {
+          bot.answerCallbackQuery(query.id, { text: '🔄 Scanning providers...' }).catch(() => {});
+          bot.deleteMessage(chatId, messageId).catch(() => {});
+          await bot.sendMessage(chatId, '<b>🔄 Force Scan Initiated...</b>\n\nChecking providers for new releases. You will receive notifications if any matches are found.', {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🔙 Back to Menu', callback_data: 'action_main_menu' }]]
+            }
+          });
+          try {
+            await runScan();
+            bot.sendMessage(chatId, '✅ <b>Scan Complete!</b> Check above for any new notifications.', { parse_mode: 'HTML' });
+          } catch(e) {
+            bot.sendMessage(chatId, '❌ <b>Scan Failed!</b> Check logs.', { parse_mode: 'HTML' });
+          }
+        }
+        else if (data.startsWith('menu_watchlist_')) {
+          const page = parseInt(data.split('_')[2]) || 0;
+          const itemsPerPage = 5;
           const items = await db.select().from(watchlist).orderBy(desc(watchlist.createdAt));
+          const totalPages = Math.ceil(items.length / itemsPerPage) || 1;
+          const pagedItems = items.slice(page * itemsPerPage, (page + 1) * itemsPerPage);
           const baseUrl = await getBaseUrl();
+
           if (items.length === 0) {
-            bot?.sendMessage(msg.chat.id, '📋 Your Watchlist is currently empty.\n\nAdd movies or series in the web app!', {
+            bot.deleteMessage(chatId, messageId).catch(() => {});
+            bot.sendMessage(chatId, '📋 <b>Your Watchlist is currently empty.</b>\n\nAdd movies or series in the web app!', {
+              parse_mode: 'HTML',
               reply_markup: {
-                inline_keyboard: [[{ text: '➕ Manage Watchlist', url: `${baseUrl}/#/watchlist` }]]
+                inline_keyboard: [
+                  [{ text: '➕ Manage Watchlist', url: `${baseUrl}/#/watchlist` }],
+                  [{ text: '🔙 Back to Menu', callback_data: 'action_main_menu' }]
+                ]
               }
             });
             return;
           }
 
-          let listText = `<b>📋 Your Watchlist (${items.length} items):</b>\n\n`;
-          const buttons: any[] = [];
-
-          items.forEach((item, idx) => {
+          let listText = `<b>📋 Your Watchlist (Page ${page + 1} of ${totalPages}):</b>\n\n`;
+          pagedItems.forEach((item, idx) => {
+            const num = (page * itemsPerPage) + idx + 1;
             const groupKey = getGroupKey(item.title, item.type);
-            const detailUrl = `${baseUrl}/#/media/${groupKey}`;
-            listText += `${idx + 1}. <b>${escapeHtml(item.title)}</b> (${item.year}) [<i>${escapeHtml(item.type)}</i>]\n   👉 <a href="${detailUrl}">View Release Page</a>\n\n`;
-            if (idx < 5) {
-              buttons.push([{ text: `🎬 ${item.title} (${item.year})`, url: detailUrl }]);
-            }
+            listText += `${num}. <b>${escapeHtml(item.title)}</b> (${item.year}) [<i>${escapeHtml(item.type)}</i>]\n   👉 <a href="${baseUrl}/#/media/${groupKey}">View Details</a>\n\n`;
           });
 
-          buttons.push([{ text: '🌐 Open Full Watchlist', url: `${baseUrl}/#/watchlist` }]);
+          const buttons: any[] = [];
+          const navRow: any[] = [];
+          if (page > 0) navRow.push({ text: '⬅️ Prev', callback_data: `menu_watchlist_${page - 1}` });
+          if (page < totalPages - 1) navRow.push({ text: 'Next ➡️', callback_data: `menu_watchlist_${page + 1}` });
+          if (navRow.length > 0) buttons.push(navRow);
+          
+          buttons.push([{ text: '🔙 Back to Menu', callback_data: 'action_main_menu' }]);
 
-          bot?.sendMessage(msg.chat.id, listText, {
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
+          bot.deleteMessage(chatId, messageId).catch(() => {});
+          bot.sendMessage(chatId, listText, {
+            parse_mode: 'HTML', disable_web_page_preview: true,
             reply_markup: { inline_keyboard: buttons }
-          } as any);
-        } catch (err: any) {
-          bot?.sendMessage(msg.chat.id, 'Error loading watchlist.');
+          }).catch(() => {});
         }
-      });
-
-      bot.onText(/\/releases|\/latest/, async (msg) => {
-        try {
-          const items = await db.select().from(releases).orderBy(desc(releases.createdAt)).limit(5);
+        else if (data.startsWith('menu_recent_')) {
+          const page = parseInt(data.split('_')[2]) || 0;
+          const itemsPerPage = 5;
+          const items = await db.select().from(releases).orderBy(desc(releases.createdAt)).limit(20);
+          const totalPages = Math.ceil(items.length / itemsPerPage) || 1;
+          const pagedItems = items.slice(page * itemsPerPage, (page + 1) * itemsPerPage);
           const baseUrl = await getBaseUrl();
+
           if (items.length === 0) {
-            bot?.sendMessage(msg.chat.id, '🎬 No discovered releases yet.', {
-              reply_markup: { inline_keyboard: [[{ text: '🌐 Open App', url: baseUrl }]] }
+            bot.deleteMessage(chatId, messageId).catch(() => {});
+            bot.sendMessage(chatId, '🎬 <b>No discovered releases yet.</b>', {
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '🔙 Back to Menu', callback_data: 'action_main_menu' }]
+                ]
+              }
             });
             return;
           }
 
-          let relText = `<b>🎬 Recent Discovered Releases:</b>\n\n`;
-          const buttons: any[] = [];
-
-          items.forEach((item, idx) => {
+          let relText = `<b>🎬 Recent Releases (Page ${page + 1} of ${totalPages}):</b>\n\n`;
+          pagedItems.forEach((item, idx) => {
+            const num = (page * itemsPerPage) + idx + 1;
             const groupKey = getGroupKey(item.title, item.type);
-            const detailUrl = `${baseUrl}/#/media/${groupKey}`;
-            relText += `${idx + 1}. <b>${escapeHtml(item.title)}</b> (${item.year}) - <i>${escapeHtml(item.releaseType)}</i>\n   👉 <a href="${detailUrl}">View Details & Qualities</a>\n\n`;
-            buttons.push([{ text: `🍿 ${item.title} (${item.releaseType})`, url: detailUrl }]);
+            relText += `${num}. <b>${escapeHtml(item.title)}</b> (${item.year}) - <i>${escapeHtml(item.releaseType)}</i>\n   👉 <a href="${baseUrl}/#/media/${groupKey}">View Details</a>\n\n`;
           });
 
-          buttons.push([{ text: '🌐 View All Recent Releases', url: `${baseUrl}/#/releases` }]);
+          const buttons: any[] = [];
+          const navRow: any[] = [];
+          if (page > 0) navRow.push({ text: '⬅️ Prev', callback_data: `menu_recent_${page - 1}` });
+          if (page < totalPages - 1) navRow.push({ text: 'Next ➡️', callback_data: `menu_recent_${page + 1}` });
+          if (navRow.length > 0) buttons.push(navRow);
+          
+          buttons.push([{ text: '🔙 Back to Menu', callback_data: 'action_main_menu' }]);
 
-          bot?.sendMessage(msg.chat.id, relText, {
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
+          bot.deleteMessage(chatId, messageId).catch(() => {});
+          bot.sendMessage(chatId, relText, {
+            parse_mode: 'HTML', disable_web_page_preview: true,
             reply_markup: { inline_keyboard: buttons }
-          } as any);
-        } catch (err: any) {
-          bot?.sendMessage(msg.chat.id, 'Error loading releases.');
+          }).catch(() => {});
         }
+        
+        bot.answerCallbackQuery(query.id).catch(() => {});
+      });
+
+      bot.onText(/\/ping/, (msg: any) => {
+        bot?.sendMessage(msg.chat.id, '<b>Pong!</b> ⚡ Release Radar Bot is online and active.', { parse_mode: 'HTML' });
       });
 
       console.log('Telegram bot initialized.');
@@ -177,15 +304,33 @@ export async function sendTelegramNotification(item: ReleaseItem) {
       };
 
       let sent = false;
-      if (item.poster && (item.poster.startsWith('http://') || item.poster.startsWith('https://'))) {
-        try {
-          await bot.sendPhoto(settings.telegramChatId, item.poster, {
-            caption,
-            ...options
-          });
-          sent = true;
-        } catch (photoErr: any) {
-          console.warn('Failed to send photo in Telegram, falling back to text:', photoErr?.message || photoErr);
+      if (item.poster) {
+        if (item.poster.startsWith('data:image/svg')) {
+           // Telegram does not support SVG images, so we skip the photo and just send text
+           // without logging an error.
+           sent = false;
+        } else if (item.poster.startsWith('http://') || item.poster.startsWith('https://')) {
+          try {
+            // Fetch the image as a buffer first to avoid Telegram server fetch errors
+            const imageRes = await fetch(item.poster);
+            if (!imageRes.ok) throw new Error(`Failed to fetch image: ${imageRes.statusText}`);
+            
+            const contentType = imageRes.headers.get('content-type');
+            if (contentType && !contentType.startsWith('image/')) {
+              throw new Error(`Invalid content type from image URL: ${contentType}`);
+            }
+
+            const arrayBuffer = await imageRes.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+
+            await bot.sendPhoto(settings.telegramChatId, buffer, {
+              caption,
+              ...options
+            });
+            sent = true;
+          } catch (photoErr: any) {
+            console.warn('Failed to send photo in Telegram, falling back to text:', photoErr?.message || photoErr);
+          }
         }
       }
 
@@ -207,6 +352,20 @@ export async function sendTelegramNotification(item: ReleaseItem) {
   }
 }
 
+export async function stopTelegramBot() {
+  if (bot) {
+    try {
+      if (typeof bot.stopPolling === 'function') {
+        await bot.stopPolling();
+      }
+      console.log('Telegram bot polling stopped.');
+      logInfo('Telegram bot polling stopped.', 'Telegram');
+    } catch (err: any) {
+      console.warn('Error stopping Telegram bot:', err?.message || err);
+    }
+  }
+}
+
 export async function sendTestTelegramNotification() {
   const sampleItem: ReleaseItem = {
     id: 0,
@@ -224,3 +383,10 @@ export async function sendTestTelegramNotification() {
   };
   return await sendTelegramNotification(sampleItem);
 }
+
+export function processTelegramUpdate(update: any) {
+  if (bot && typeof bot.processUpdate === 'function') {
+    bot.processUpdate(update);
+  }
+}
+

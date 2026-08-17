@@ -1,5 +1,6 @@
 import { Provider, ReleaseItem } from '../types';
 import { generateSearchQueries } from '../utils/mediaGrouper';
+import { logInfo, logWarning, logError } from '../services/logger';
 
 export class PirateBayProvider implements Provider {
   name = 'The Pirate Bay';
@@ -15,9 +16,9 @@ export class PirateBayProvider implements Provider {
       if (!torrent.id || torrent.id === '0' || torrent.name === 'No results found') continue;
       if (processedIds.has(torrent.id)) continue;
       
-      // Only process video categories (201-212 except 206)
-      const cat = parseInt(torrent.category, 10);
-      if (!(cat >= 201 && cat <= 212 && cat !== 206)) continue;
+      // Allow video categories (200-299 except 206 porn) or missing category
+      const cat = parseInt(torrent.category || '0', 10);
+      if (cat !== 0 && !(cat >= 200 && cat <= 299 && cat !== 206)) continue;
       
       processedIds.add(torrent.id);
 
@@ -64,8 +65,9 @@ export class PirateBayProvider implements Provider {
     const items: ReleaseItem[] = [];
     const processedIds = new Set<string>();
 
-    // 1. WATCHLIST PRIORITY: If watchlist items exist, query PirateBay specifically for each watchlist item FIRST
+    // 1. WATCHLIST PRIORITY: Query PirateBay specifically for each watchlist item
     if (watchlistItems && watchlistItems.length > 0) {
+      await logInfo(`PirateBay: Searching queries for ${watchlistItems.length} watchlist item(s)...`, 'PirateBay');
       const watchlistQueries = new Set<string>();
       watchlistItems.forEach(w => {
         if (w.title) {
@@ -80,61 +82,51 @@ export class PirateBayProvider implements Provider {
       for (let i = 0; i < queries.length; i += BATCH_SIZE) {
         const batch = queries.slice(i, i + BATCH_SIZE);
         await Promise.all(batch.map(async (q) => {
-          try {
-            const url = `https://apibay.org/q.php?q=${encodeURIComponent(q)}`;
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
+          let fetched = false;
+          const urls = [
+            `https://apibay.org/q.php?q=${encodeURIComponent(q)}`,
+            `https://bayapi.xyz/q.php?q=${encodeURIComponent(q)}`
+          ];
 
-            const res = await fetch(url, { 
-              signal: controller.signal,
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          for (const url of urls) {
+            if (fetched) break;
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+              const res = await fetch(url, { 
+                signal: controller.signal,
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                  'Accept': 'application/json, text/plain, */*'
+                }
+              });
+              clearTimeout(timeoutId);
+
+              if (!res.ok) {
+                console.warn(`PirateBay watchlist fetch status ${res.status} for query "${q}" at ${url}`);
+                continue;
               }
-            });
-            clearTimeout(timeoutId);
-
-            if (!res.ok) return;
-            const data = await res.json();
-            this.parseTorrentData(data, processedIds, items);
-          } catch (e) {
-            console.warn(`PirateBay watchlist fetch failed for query "${q}":`, e);
+              const text = await res.text();
+              try {
+                const data = JSON.parse(text);
+                if (Array.isArray(data)) {
+                  this.parseTorrentData(data, processedIds, items);
+                  fetched = true;
+                }
+              } catch {
+                console.warn(`PirateBay returned non-JSON response for query "${q}" at ${url}`);
+              }
+            } catch (e: any) {
+              console.warn(`PirateBay watchlist fetch failed for query "${q}" at ${url}:`, e?.message || e);
+            }
           }
         }));
       }
+      await logInfo(`PirateBay watchlist search finished. Items found so far: ${items.length}`, 'PirateBay');
     }
 
-    // 2. Fetch top100 precompiled endpoints to discover general recent releases
-    const endpoints = [
-      'https://apibay.org/precompiled/data_top100_recent.json',
-      'https://apibay.org/precompiled/data_top100_201.json',
-      'https://apibay.org/precompiled/data_top100_205.json',
-      'https://apibay.org/precompiled/data_top100_207.json',
-      'https://apibay.org/precompiled/data_top100_208.json',
-      'https://apibay.org/precompiled/data_top100_211.json',
-      'https://apibay.org/precompiled/data_top100_212.json'
-    ];
-
-    await Promise.all(endpoints.map(async (url) => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-        const res = await fetch(url, { 
-          signal: controller.signal,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
-        });
-        clearTimeout(timeoutId);
-
-        if (!res.ok) return;
-        const data = await res.json();
-        this.parseTorrentData(data, processedIds, items);
-      } catch (e) {
-        console.warn(`PirateBay fetch failed for "${url}":`, e);
-      }
-    }));
-
+    await logInfo(`PirateBay total releases parsed: ${items.length}`, 'PirateBay');
     return items;
   }
 }

@@ -154,6 +154,17 @@ export function setupRoutes(app: Express) {
       res.status(500).json({ error: e.message || 'Failed to send Telegram test message' });
     }
   });
+
+  app.post('/api/telegram/webhook', async (req: Request, res: Response) => {
+    try {
+      const { processTelegramUpdate } = await import('../telegram/bot');
+      processTelegramUpdate(req.body);
+      res.sendStatus(200);
+    } catch (e: any) {
+      console.error('Webhook error:', e);
+      res.sendStatus(500);
+    }
+  });
   
   // Logs
   app.get('/api/logs', async (req: Request, res: Response) => {
